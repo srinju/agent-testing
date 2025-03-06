@@ -1,164 +1,133 @@
-import datetime
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+from typing import List, Optional
+from dataclasses import dataclass
+from bson import ObjectId
 import logging
 import os
-from typing import Dict, List, Optional, Union
 
-import pymongo
-from bson import ObjectId
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure, PyMongoError
-
-from exam_models import Exam, ExamQuestion
-
-# Configure logging
 logger = logging.getLogger("exam_db")
 
+@dataclass
+class ExamQuestion:
+    text: str
+
+@dataclass
+class Exam:
+    exam_id: str
+    name: str
+    questions: List[ExamQuestion]
+    duration: int
+    difficulty: str
+
 class ExamDBDriver:
-    """
-    Driver for interacting with the MongoDB database for exam data.
-    """
-    
-    def __init__(self):
-        """Initialize the MongoDB driver."""
+    def __init__(self, mongo_uri: str = None, db_name: str = "coral-ai"):
+        self.mongo_uri = mongo_uri or os.getenv("MONGO_URI") or "mongodb://localhost:27017"
+        self.db_name = db_name
         self.client = None
         self.db = None
         self.exams_collection = None
         self.submissions_collection = None
-        
-        # Get MongoDB connection string from environment variable
-        self.mongo_uri = os.environ.get("MONGODB_URI")
-        if not self.mongo_uri:
-            logger.error("MONGODB_URI environment variable not set")
-    
-    def connect(self) -> bool:
-        """
-        Connect to the MongoDB database.
-        
-        Returns:
-            True if connection successful, False otherwise
-        """
-        if not self.mongo_uri:
-            logger.error("MongoDB URI not set")
-            return False
-            
+        self._connect()
+
+    def _connect(self):
         try:
-            # Connect to MongoDB
-            self.client = MongoClient(self.mongo_uri)
-            
-            # Check connection
-            self.client.admin.command("ping")
-            logger.info("Successfully connected to MongoDB")
-            
-            # Get database and collections
-            self.db = self.client["coral-ai"]
+            # Set a shorter timeout for faster failure
+            self.client = MongoClient(self.mongo_uri, serverSelectionTimeoutMS=5000)
+            # Force a connection to verify it works
+            self.client.admin.command('ping')
+            self.db = self.client[self.db_name]
             self.exams_collection = self.db["exams"]
             self.submissions_collection = self.db["submissions"]
-            
-            return True
-        except ConnectionFailure as e:
-            logger.error(f"MongoDB connection failed: {str(e)}")
-            return False
-        except Exception as e:
-            logger.error(f"Error connecting to MongoDB: {str(e)}")
-            return False
-    
+            logger.info("Connected to MongoDB successfully")
+        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+            logger.error(f"MongoDB connection failed: {e}")
+            self.client = None
+            self.db = None
+            self.exams_collection = None
+            self.submissions_collection = None
+
+    #GET EXAM BY ID       
+
     def get_exam_by_id(self, exam_id: str) -> Optional[Exam]:
+        if not self.client:
+            logger.error("MongoDB client not connected")
+            return None
+            
+        try:
+            logger.info(f"Attempting to fetch exam with ID: {exam_id}")
+            
+            if not ObjectId.is_valid(exam_id):
+                logger.error(f"Invalid exam ID format: {exam_id}")
+                return None
+
+            exam_data = self.exams_collection.find_one({"_id": ObjectId(exam_id)})
+            
+            if not exam_data:
+                logger.error(f"No exam found for ID: {exam_id}")
+                return None
+            
+            logger.info(f"Found exam: {exam_data.get('name', 'Unnamed')} with {len(exam_data.get('questions', []))} questions")
+                
+            return Exam(
+                exam_id=str(exam_data["_id"]),
+                name=exam_data.get("name", "Unnamed Exam"),
+                questions=[ExamQuestion(text=q.get("text", "")) for q in exam_data.get("questions", [])],
+                duration=exam_data.get("duration", 0),
+                difficulty=exam_data.get("difficulty", "Medium")
+            )
+        
+        except Exception as e:
+            logger.error(f"MongoDB Error: {str(e)}", exc_info=True)
+            return None 
+        
+    # GET PERSONALIZED QUES FROM SUBMISSION TABLE
+            
+    def get_personalized_questions_from_submission(self, exam_id: str) -> Optional[List[ExamQuestion]]:
         """
-        Get an exam by its ID.
+        Retrieve personalized questions from the most recent submission for a given exam ID.
         
         Args:
-            exam_id: The ID of the exam to get
+            exam_id: The ID of the exam
             
         Returns:
-            The exam if found, None otherwise
+            A list of ExamQuestion objects if found, None otherwise
         """
         if not self.client:
             logger.error("MongoDB client not connected")
             return None
             
         try:
-            # Convert string ID to ObjectId
+            logger.info(f"Attempting to fetch personalized questions for exam ID: {exam_id}")
+            
             if not ObjectId.is_valid(exam_id):
                 logger.error(f"Invalid exam ID format: {exam_id}")
                 return None
                 
-            # Find the exam
-            exam_doc = self.exams_collection.find_one({"_id": ObjectId(exam_id)})
-            if not exam_doc:
-                logger.error(f"Exam not found with ID: {exam_id}")
-                return None
-                
-            # Convert to Exam object
-            questions = []
-            for q in exam_doc.get("questions", []):
-                questions.append(ExamQuestion(
-                    text=q.get("text", ""),
-                    answer=q.get("answer", ""),
-                    difficulty=q.get("difficulty", "medium")
-                ))
-                
-            exam = Exam(
-                exam_id=str(exam_doc["_id"]),
-                name=exam_doc.get("name", "Unnamed Exam"),
-                description=exam_doc.get("description", ""),
-                questions=questions
+            # Find the most recent submission for this exam that has personalized questions
+            submission = self.submissions_collection.find_one(
+                {
+                    "examId": exam_id,
+                    "personalizedQuestions": {"$exists": True, "$ne": []}
+                },
+                sort=[("createdAt", -1)]  # Sort by creation date, most recent first
             )
             
-            logger.info(f"Found exam: {exam.name} with {len(exam.questions)} questions")
-            return exam
-            
-        except PyMongoError as e:
-            logger.error(f"MongoDB Error while getting exam: {str(e)}")
-            return None
-        except Exception as e:
-            logger.error(f"Error getting exam: {str(e)}")
-            return None
-    
-    def get_personalized_questions_from_submission(self, submission_id: str) -> List[ExamQuestion]:
-        """
-        Get personalized questions from a submission.
-        
-        Args:
-            submission_id: The ID of the submission
-            
-        Returns:
-            List of personalized questions
-        """
-        if not self.client:
-            logger.error("MongoDB client not connected")
-            return []
-            
-        try:
-            # Convert string ID to ObjectId
-            if not ObjectId.is_valid(submission_id):
-                logger.error(f"Invalid submission ID format: {submission_id}")
-                return []
-                
-            # Find the submission
-            submission = self.submissions_collection.find_one({"_id": ObjectId(submission_id)})
             if not submission:
-                logger.error(f"Submission not found with ID: {submission_id}")
-                return []
+                logger.info(f"No submission with personalized questions found for exam ID: {exam_id}")
+                return None
                 
-            # Get personalized questions
-            personalized_questions = []
-            for q in submission.get("personalizedQuestions", []):
-                personalized_questions.append(ExamQuestion(
-                    text=q.get("text", ""),
-                    answer=q.get("answer", ""),
-                    difficulty=q.get("difficulty", "medium")
-                ))
-                
-            logger.info(f"Found {len(personalized_questions)} personalized questions for submission {submission_id}")
-            return personalized_questions
+            personalized_questions = submission.get("personalizedQuestions", [])
+            logger.info(f"Found {len(personalized_questions)} personalized questions in submission {submission.get('_id')}")
             
-        except PyMongoError as e:
-            logger.error(f"MongoDB Error while getting personalized questions: {str(e)}")
-            return []
+            return [ExamQuestion(text=q.get("text", "")) for q in personalized_questions]
+            
         except Exception as e:
-            logger.error(f"Error getting personalized questions: {str(e)}")
-            return []
-    
+            logger.error(f"MongoDB Error while fetching personalized questions: {str(e)}", exc_info=True)
+            return None
+
+    # SAVE CONVERSATION TRANSCRIPT TO THE SUBMISSIONS TABLE IN THE DB    
+
     def save_conversation_transcript(self, exam_id: str, conversation: list) -> bool:
         """
         Save the conversation transcript to the submission document for a specific exam.
@@ -176,62 +145,47 @@ class ExamDBDriver:
             
         try:
             logger.info(f"Saving conversation transcript for exam ID: {exam_id}")
-            logger.info(f"Conversation has {len(conversation)} messages")
-            
-            # Convert the conversation to a format that MongoDB can store
-            serializable_conversation = []
-            for msg in conversation:
-                # Ensure timestamp is a string if it's not already
-                timestamp = msg.get("timestamp")
-                if isinstance(timestamp, datetime.datetime):
-                    timestamp = timestamp.isoformat()
-                    
-                serializable_conversation.append({
-                    "role": msg.get("role", ""),
-                    "content": msg.get("content", ""),
-                    "timestamp": timestamp
-                })
-            
-            # Log a sample of the conversation for debugging
-            if len(serializable_conversation) > 0:
-                logger.info(f"First message: {serializable_conversation[0]}")
-                if len(serializable_conversation) > 1:
-                    logger.info(f"Second message: {serializable_conversation[1]}")
             
             if not ObjectId.is_valid(exam_id):
                 logger.error(f"Invalid exam ID format: {exam_id}")
                 return False
                 
-            # Find the most recent submission for this exam
+            # First try to find an existing submission with personalized questions
             submission = self.submissions_collection.find_one(
-                {"examId": exam_id},
+                {
+                    "examId": exam_id,
+                    "personalizedQuestions": {"$exists": True, "$ne": []}
+                },
                 sort=[("createdAt", -1)]  # Sort by creation date, most recent first
             )
+            
+            # If no submission with personalized questions found, look for any submission
+            if not submission:
+                submission = self.submissions_collection.find_one(
+                    {"examId": exam_id},
+                    sort=[("createdAt", -1)]
+                )
             
             if not submission:
                 logger.error(f"No submission found for exam ID: {exam_id}")
                 return False
                 
-            logger.info(f"Found submission with ID: {submission['_id']}")
-            
             # Update the submission with the conversation transcript
             result = self.submissions_collection.update_one(
                 {"_id": submission["_id"]},
                 {
                     "$set": {
-                        "submissionTranscript": serializable_conversation,
+                        "submissionTranscript": conversation,
                         "status": "completed"  # Update status to completed
                     }
                 }
             )
             
-            logger.info(f"Update result: matched={result.matched_count}, modified={result.modified_count}")
-            
-            if result.matched_count > 0:
+            if result.modified_count > 0:
                 logger.info(f"Successfully saved conversation transcript to submission {submission['_id']}")
                 return True
             else:
-                logger.warning(f"No submission matched when saving transcript for exam {exam_id}")
+                logger.warning(f"No changes made when saving transcript to submission {submission['_id']}")
                 return False
                 
         except Exception as e:
