@@ -57,6 +57,7 @@ async def entrypoint(ctx: JobContext):
 
     exam_state = ExamState()
     db_driver = ctx.proc.userdata["db"]
+    last_user_message = None  # Add this line to declare the variable
 
     # Define the agent 
     agent = VoicePipelineAgent(
@@ -69,8 +70,6 @@ async def entrypoint(ctx: JobContext):
         max_endpointing_delay=8.0,
         chat_ctx=initial_ctx,
     )
-
-
 
     async def ask_next_question():
         if not exam_state.data_received:
@@ -150,9 +149,6 @@ async def entrypoint(ctx: JobContext):
                 f"Thank you for completing the {exam_state.exam.name} exam. This concludes our session. You've answered all {len(exam_state.exam.questions)} questions. Good luck with your results!",
                 allow_interruptions=False
             )
-
-
-
 
     async def handle_data_received(data: rtc.DataPacket):
         logger.info(f"Data received handler triggered")
@@ -270,9 +266,6 @@ async def entrypoint(ctx: JobContext):
             except Exception as e:
                 logger.error(f"Error processing data: {e}", exc_info=True)
 
-
-
-
     # Register this handler BEFORE connecting participants
     ctx.room.on("data_received", lambda data: asyncio.create_task(handle_data_received(data)))
     
@@ -283,61 +276,109 @@ async def entrypoint(ctx: JobContext):
 
     # Custom handler for when participant speaks and finishes speaking
     async def on_user_speech_committed():
-        logger.info("User speech committed")
+        nonlocal last_user_message
         
         # Get the last user message from the chat context
-        last_user_message = None
         for message in reversed(agent.chat_ctx.messages):
             if message.role == "user":
-                last_user_message = message.text
+                # Use content instead of text for ChatMessage objects
+                last_user_message = message.content if hasattr(message, "content") else message.text
                 break
+                
+        logger.info("User speech committed")
         
-        logger.info(f"Last user message: {last_user_message}")
-        
-        # Check if we're waiting for a response about another chance
-        if exam_state.waiting_for_another_chance_response and last_user_message:
-            exam_state.waiting_for_another_chance_response = False
+        # If the user says "end exam" or similar, end the exam
+        if last_user_message and any(phrase in last_user_message.lower() for phrase in ["end exam", "finish exam", "stop exam", "exit exam", "quit exam", "terminate exam"]):
+            await agent.say("Thank you for completing the exam. I'll save your responses now.", allow_interruptions=False)
+            exam_state.exam_completed = True
             
-            # Check if the user wants another chance
-            if any(phrase in last_user_message.lower() for phrase in ["yes", "yeah", "sure", "okay", "please", "give me another chance"]):
-                logger.info("User wants another chance")
-                exam_state.needs_another_chance = True
-                await asyncio.sleep(1.0)
-                await ask_next_question()
-                return
-            else:
-                logger.info("User doesn't want another chance, moving to next question")
-                exam_state.needs_another_chance = False
-                # Continue to ask the next question
-        
-        # Check if the user's response indicates they don't know the answer
-        elif last_user_message and any(phrase in last_user_message.lower() for phrase in ["i don't know", "don't know", "no idea", "not sure", "i'm not sure", "i am not sure", "i have no idea"]):
-            logger.info("User indicated they don't know the answer")
-            
-            # Ask if they want another chance
-            exam_state.waiting_for_another_chance_response = True
-            await agent.say("Would you like another chance to answer this question?", allow_interruptions=True)
+            # Save the conversation transcript when the exam is explicitly ended
+            try:
+                conversation = extract_conversation_transcript()
+                    
+                # Save to database
+                if db_driver.save_conversation_transcript(exam_state.exam.exam_id, conversation):
+                    logger.info(f"Successfully saved conversation transcript to submission for exam {exam_state.exam.exam_id}")
+                else:
+                    logger.error(f"Failed to save conversation transcript for exam {exam_state.exam.exam_id}")
+                    
+            except Exception as e:
+                logger.error(f"Error saving conversation transcript: {str(e)}", exc_info=True)
+                
             return
-        
-        # Add delay to give a more natural conversation flow
-        await asyncio.sleep(1.5)
-        if not exam_state.exam_completed:
-            await ask_next_question()
+            
+        # If we're waiting for the user to confirm they're ready for the next question
+        if exam_state.waiting_for_next_question_confirmation:
+            if last_user_message and any(phrase in last_user_message.lower() for phrase in ["yes", "yeah", "sure", "okay", "ok", "ready", "next"]):
+                exam_state.waiting_for_next_question_confirmation = False
+                await ask_next_question()
+            else:
+                await agent.say("Let me know when you're ready to continue to the next question.", allow_interruptions=True)
+            return
 
     agent.on("user_speech_committed", lambda _: asyncio.create_task(on_user_speech_committed()))
 
+    # Helper function to extract conversation transcript
+    def extract_conversation_transcript():
+        conversation = []
+        current_time = datetime.datetime.now()
+        
+        for message in agent.chat_ctx.messages:
+            # Skip system messages and empty messages
+            if message.role == "system":
+                continue
+                
+            # Get the message content
+            content = ""
+            if hasattr(message, "content"):
+                content = message.content
+            elif hasattr(message, "text"):
+                content = message.text
+                
+            if not content.strip():
+                continue
+                
+            # Map assistant role to agent
+            role = "agent" if message.role == "assistant" else "user"
+            
+            # Ensure each message has a timestamp
+            timestamp = getattr(message, "timestamp", None)
+            if not timestamp:
+                timestamp = current_time
+                current_time += datetime.timedelta(milliseconds=1)  # Ensure unique timestamps
+            
+            conversation.append({
+                "role": role,
+                "content": content.strip(),
+                "timestamp": timestamp
+            })
+            
+        return conversation
 
-
-    
     @ctx.room.on("participant_connected")
     def on_participant_connected(participant):
         logger.info(f"Participant connected: {participant.identity}")
-        # Send a brief greeting when participant connects
-        #asyncio.create_task(agent.say("Welcome to Coral AI Exam Platform. I'll be your exam proctor today. Please wait while I load your exam.", allow_interruptions=False))
-        pass
+
+    @ctx.room.on("participant_disconnected")
+    def on_participant_disconnected(participant):
+        logger.info(f"Participant disconnected: {participant.identity}")
+        
+        # Save the conversation transcript when the participant disconnects
+        try:
+            conversation = extract_conversation_transcript()
+                
+            # Save to database
+            if db_driver.save_conversation_transcript(exam_state.exam.exam_id, conversation):
+                logger.info(f"Successfully saved conversation transcript to submission for exam {exam_state.exam.exam_id}")
+            else:
+                logger.error(f"Failed to save conversation transcript for exam {exam_state.exam.exam_id}")
+                
+        except Exception as e:
+            logger.error(f"Error saving conversation transcript: {str(e)}", exc_info=True)
+
     # Start the agent
     agent.start(ctx.room, participant)
-
+    
     # Periodic check to see if we've received data
     check_interval = 5  # seconds
     max_checks = 12  # 60 seconds total
@@ -350,8 +391,22 @@ async def entrypoint(ctx: JobContext):
         
         if checks == 3 and not exam_state.data_received:  # After 15 seconds
             await agent.say("Waiting for exam data. Please ensure it has been sent to the room.", allow_interruptions=False)
-
-
+    
+    # Wait for the agent to finish
+    await agent.wait_until_done()
+    
+    # Save the conversation transcript when the exam is completed or when we exit
+    try:
+        conversation = extract_conversation_transcript()
+            
+        # Save to database
+        if db_driver.save_conversation_transcript(exam_state.exam.exam_id, conversation):
+            logger.info(f"Successfully saved conversation transcript to submission for exam {exam_state.exam.exam_id}")
+        else:
+            logger.error(f"Failed to save conversation transcript for exam {exam_state.exam.exam_id}")
+            
+    except Exception as e:
+        logger.error(f"Error saving conversation transcript: {str(e)}", exc_info=True)
 
 if __name__ == "__main__":
     cli.run_app(

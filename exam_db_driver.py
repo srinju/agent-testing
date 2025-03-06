@@ -146,11 +146,17 @@ class ExamDBDriver:
         try:
             logger.info(f"Saving conversation transcript for exam ID: {exam_id}")
             
-            if not ObjectId.is_valid(exam_id):
-                logger.error(f"Invalid exam ID format: {exam_id}")
-                return False
+            # Validate exam_id format - but don't return early if invalid
+            is_valid_object_id = False
+            try:
+                is_valid_object_id = ObjectId.is_valid(exam_id)
+                if not is_valid_object_id:
+                    logger.warning(f"Invalid ObjectId format for exam_id: {exam_id}, will try to use as string ID")
+            except Exception as e:
+                logger.warning(f"Error validating ObjectId: {str(e)}, will try to use as string ID")
                 
             # First try to find an existing submission with personalized questions
+            logger.info(f"Looking for submission with personalized questions for exam ID: {exam_id}")
             submission = self.submissions_collection.find_one(
                 {
                     "examId": exam_id,
@@ -161,6 +167,7 @@ class ExamDBDriver:
             
             # If no submission with personalized questions found, look for any submission
             if not submission:
+                logger.info(f"No submission with personalized questions found, looking for any submission with exam ID: {exam_id}")
                 submission = self.submissions_collection.find_one(
                     {"examId": exam_id},
                     sort=[("createdAt", -1)]
@@ -170,12 +177,24 @@ class ExamDBDriver:
                 logger.error(f"No submission found for exam ID: {exam_id}")
                 return False
                 
+            logger.info(f"Found submission with ID: {submission['_id']} for exam ID: {exam_id}")
+            
+            # Format the conversation to ensure timestamps are properly serialized
+            formatted_conversation = []
+            for msg in conversation:
+                formatted_msg = {
+                    "role": msg["role"],
+                    "content": msg["content"],
+                    "timestamp": msg["timestamp"]
+                }
+                formatted_conversation.append(formatted_msg)
+                
             # Update the submission with the conversation transcript
             result = self.submissions_collection.update_one(
                 {"_id": submission["_id"]},
                 {
                     "$set": {
-                        "submissionTranscript": conversation,
+                        "submissionTranscript": formatted_conversation,
                         "status": "completed"  # Update status to completed
                     }
                 }
