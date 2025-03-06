@@ -123,10 +123,17 @@ async def entrypoint(ctx: JobContext):
                     # Map assistant role to agent
                     role = "agent" if message.role == "assistant" else message.role
                     
+                    # Check the attribute name - it might be 'content' instead of 'text'
+                    content = ""
+                    if hasattr(message, "content"):
+                        content = message.content
+                    elif hasattr(message, "text"):
+                        content = message.text
+                    
                     conversation.append({
                         "role": role,
-                        "content": message.text,
-                        "timestamp": message.timestamp if hasattr(message, "timestamp") else datetime.datetime.now()
+                        "content": content,
+                        "timestamp": datetime.datetime.now()
                     })
                     
                 # Save to database
@@ -280,7 +287,11 @@ async def entrypoint(ctx: JobContext):
         last_user_message = None
         for message in reversed(agent.chat_ctx.messages):
             if message.role == "user":
-                last_user_message = message.text
+                # Check if the message has 'content' or 'text' attribute
+                if hasattr(message, "content"):
+                    last_user_message = message.content
+                elif hasattr(message, "text"):
+                    last_user_message = message.text
                 break
         
         logger.info(f"Last user message: {last_user_message}")

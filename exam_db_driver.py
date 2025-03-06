@@ -47,6 +47,8 @@ class ExamDBDriver:
             self.exams_collection = None
             self.submissions_collection = None
 
+            
+
     #GET EXAM BY ID       
 
     def get_exam_by_id(self, exam_id: str) -> Optional[Exam]:
@@ -80,6 +82,7 @@ class ExamDBDriver:
         except Exception as e:
             logger.error(f"MongoDB Error: {str(e)}", exc_info=True)
             return None 
+        
         
     # GET PERSONALIZED QUES FROM SUBMISSION TABLE
             
@@ -125,6 +128,7 @@ class ExamDBDriver:
         except Exception as e:
             logger.error(f"MongoDB Error while fetching personalized questions: {str(e)}", exc_info=True)
             return None
+        
 
     # SAVE CONVERSATION TRANSCRIPT TO THE SUBMISSIONS TABLE IN THE DB    
 
@@ -145,6 +149,7 @@ class ExamDBDriver:
             
         try:
             logger.info(f"Saving conversation transcript for exam ID: {exam_id}")
+            logger.info(f"Conversation data: {conversation}")
             
             if not ObjectId.is_valid(exam_id):
                 logger.error(f"Invalid exam ID format: {exam_id}")
@@ -160,6 +165,8 @@ class ExamDBDriver:
                 logger.error(f"No submission found for exam ID: {exam_id}")
                 return False
                 
+            logger.info(f"Found submission: {submission['_id']}")
+            
             # Update the submission with the conversation transcript
             result = self.submissions_collection.update_one(
                 {"_id": submission["_id"]},
