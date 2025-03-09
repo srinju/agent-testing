@@ -56,17 +56,19 @@ async def ask_next_question(agent, exam_state, db_driver):
         
         # Save the conversation transcript to the submission
         await save_transcript(db_driver, exam_state.exam.exam_id, agent)
+
+        # send message to the frontend to end the exam
+        await agent.data_channel.send_message(json.dumps({
+        "type": "EXAM_COMPLETED",
+        "data": {
+            "examId": exam_state.exam.exam_id
+        }
+    }))
             
         await agent.say(
             f"Thank you for completing the {exam_state.exam.name} exam. This concludes our session. You've answered all {len(exam_state.exam.questions)} questions. Good luck with your results!",
             allow_interruptions=False
         )
-
-        #send exam completion signal>
-        await agent.send_message({
-            "type" : "exam_completed"
-        })
-
 
 async def handle_data_received(data, agent, exam_state, db_driver):
     """
