@@ -62,6 +62,12 @@ async def ask_next_question(agent, exam_state, db_driver):
             allow_interruptions=False
         )
 
+        #send exam completion signal>
+        await agent.send_message({
+            "type" : "exam_completed"
+        })
+
+
 async def handle_data_received(data, agent, exam_state, db_driver):
     """
     Handles data received from the frontend, such as exam questions.
