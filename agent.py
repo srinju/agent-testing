@@ -112,7 +112,9 @@ async def entrypoint(ctx: JobContext):
     
     # Disconnect from the room
     logger.info("Exam completed, disconnecting from the room")
+    await ctx.room.disconnect()
     ctx.shutdown(reason="Session ended")
+    logger.info("Agent shutdown complete.")
 
 if __name__ == "__main__":
     cli.run_app(
