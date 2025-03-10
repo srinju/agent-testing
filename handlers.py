@@ -57,34 +57,17 @@ async def ask_next_question(agent, exam_state, db_driver):
         # Save the conversation transcript to the submission
         await save_transcript(db_driver, exam_state.exam.exam_id, agent)
 
-        # send message to the frontend to end the exam
-        await agent.data_channel.send_message(json.dumps({
-            "type": "EXAM_COMPLETED",
-            "data": {
-                "examId": exam_state.exam.exam_id,
-                "endCall" : True #call ended 
-            }
-        }))
-            
         await agent.say(
             f"Thank you for completing the {exam_state.exam.name} exam. This concludes our session. You've answered all {len(exam_state.exam.questions)} questions. Good luck with your results!",
             allow_interruptions=False
         )
-
-        await asyncio.sleep(5)
         
-        # Disconnect the agent from the room
-        logger.info("Agent disconnecting from the room")
-        if hasattr(agent, 'room') and agent.room:
-            await agent.room.disconnect()
-        else:
-            # If agent.room is not directly accessible, try to disconnect through the context
-            try:
-                # This assumes the agent has access to the room context
-                await agent.ctx.room.disconnect()
-            except Exception as e:
-                logger.error(f"Error disconnecting from room: {e}", exc_info=True)
 
+        #small delay to ensure the entire message is delivered,
+        await asyncio.sleep(3)
+        #disconnect the agent from the room>
+        logger.info("disconneecting the agent from the room!!")
+        await agent.room.disconnect()
 
 async def handle_data_received(data, agent, exam_state, db_driver):
     """
@@ -234,32 +217,11 @@ async def on_user_speech_committed(agent, exam_state, db_driver, last_user_messa
         await agent.say("Thank you for completing the exam. I'll save your responses now.", allow_interruptions=False)
         exam_state.exam_completed = True
 
-        # Send message to the frontend to end the exam
-        await agent.data_channel.send_message(json.dumps({
-            "type": "EXAM_COMPLETED",
-            "data": {
-                "examId": exam_state.exam.exam_id,
-                "endCall": True
-            }
-        }))
-        
         # Save the conversation transcript when the exam is explicitly ended
-        await save_transcript(db_driver, exam_state.exam.exam_id, agent)
-        
-        await asyncio.sleep(5)
-        
-        # Disconnect the agent from the room
-        logger.info("Agent disconnecting from the room")
-        if hasattr(agent, 'room') and agent.room:
-            await agent.room.disconnect()
-        else:
-            # If agent.room is not directly accessible, try to disconnect through the context
-            try:
-                # This assumes the agent has access to the room context
-                await agent.ctx.room.disconnect()
-            except Exception as e:
-                logger.error(f"Error disconnecting from room: {e}", exc_info=True)
-                
+        await save_transcript(db_driver, exam_state.exam.exam_id, agent)   
+        await asyncio.sleep(3)
+        #disconnec the agent from the room>
+        await agent.room.disconnect()
         return
         
     # If we're waiting for the user to confirm they're ready for the next question
