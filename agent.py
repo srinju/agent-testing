@@ -87,11 +87,32 @@ async def entrypoint(ctx: JobContext):
     # Wait for exam data
     await wait_for_data(agent, exam_state)
     
-    # Wait for the agent to finish
-    await agent.wait_until_done()
+    # Instead of wait_until_done, use a different approach to keep the agent running
+    # Create an event that will be set when the exam is completed
+    exam_completed_event = asyncio.Event()
+    
+    # Add a handler to monitor when the exam is completed
+    async def monitor_exam_completion():
+        while not exam_state.exam_completed:
+            await asyncio.sleep(1)
+        # When exam is completed, set the event
+        exam_completed_event.set()
+    
+    # Start the monitoring task
+    monitor_task = asyncio.create_task(monitor_exam_completion())
+    
+    # Wait for the exam to complete
+    await exam_completed_event.wait()
+    
+    # Add a small delay to ensure the final message is delivered
+    await asyncio.sleep(2)
     
     # Save the conversation transcript when the exam is completed or when we exit
     await save_transcript(db_driver, exam_state.exam.exam_id, agent)
+    
+    # Disconnect from the room
+    logger.info("Exam completed, disconnecting from the room")
+    await ctx.room.disconnect()
 
 if __name__ == "__main__":
     cli.run_app(

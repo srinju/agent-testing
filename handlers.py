@@ -63,12 +63,6 @@ async def ask_next_question(agent, exam_state, db_driver):
         )
         
 
-        #small delay to ensure the entire message is delivered,
-        await asyncio.sleep(3)
-        #disconnect the agent from the room>
-        logger.info("disconneecting the agent from the room!!")
-        await agent.room.disconnect()
-
 async def handle_data_received(data, agent, exam_state, db_driver):
     """
     Handles data received from the frontend, such as exam questions.
@@ -219,9 +213,6 @@ async def on_user_speech_committed(agent, exam_state, db_driver, last_user_messa
 
         # Save the conversation transcript when the exam is explicitly ended
         await save_transcript(db_driver, exam_state.exam.exam_id, agent)   
-        await asyncio.sleep(3)
-        #disconnec the agent from the room>
-        await agent.room.disconnect()
         return
         
     # If we're waiting for the user to confirm they're ready for the next question
