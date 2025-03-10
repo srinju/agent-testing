@@ -1,6 +1,6 @@
-import asyncio
 import logging
-import json
+import asyncio
+from dotenv import load_dotenv
 from livekit.agents import (
     AutoSubscribe,
     JobContext,
@@ -19,6 +19,7 @@ from handlers import ask_next_question, handle_data_received, on_user_speech_com
 from transcript import save_transcript
 from utils import setup_participant_handlers, wait_for_data
 
+load_dotenv(dotenv_path=".env.local")
 logger = logging.getLogger("voice-agent")
 
 def prewarm(proc: JobProcess):
@@ -86,51 +87,32 @@ async def entrypoint(ctx: JobContext):
     # Wait for exam data
     await wait_for_data(agent, exam_state)
     
-    try:
-        # Instead of wait_until_done, use a different approach to keep the agent running
-        # Create an event that will be set when the exam is completed
-        exam_completed_event = asyncio.Event()
-        
-        # Add a handler to monitor when the exam is completed
-        async def monitor_exam_completion():
-            while not exam_state.exam_completed:
-                await asyncio.sleep(1)
-            # When exam is completed, set the event
-            logger.info("Exam completion detected, setting event")
-            exam_completed_event.set()
-        
-        # Start the monitoring task
-        monitor_task = asyncio.create_task(monitor_exam_completion())
-        
-        # Wait for the exam to complete
-        await exam_completed_event.wait()
-        
-        # Add a small delay to ensure the final message is delivered
-        logger.info("Exam completed, waiting for final message delivery")
-        await asyncio.sleep(2)
-        
-        # Save the conversation transcript when the exam is completed or when we exit
-        logger.info("Saving transcript")
-        await save_transcript(db_driver, exam_state.exam.exam_id, agent)
-        
-        # Stop the agent
-        logger.info("Stopping agent")
-        agent.stop()
-        
-        # Disconnect from the room
-        logger.info("Disconnecting from room")
-        await ctx.disconnect()
-        
-        logger.info("Successfully disconnected from room")
-    except Exception as e:
-        logger.error(f"Error during exam completion: {e}", exc_info=True)
-        # Try to disconnect even if there was an error
-        try:
-            logger.info("Attempting to disconnect after error")
-            agent.stop()
-            await ctx.disconnect()
-        except Exception as disconnect_error:
-            logger.error(f"Error during disconnect: {disconnect_error}", exc_info=True)
+    # Instead of wait_until_done, use a different approach to keep the agent running
+    # Create an event that will be set when the exam is completed
+    exam_completed_event = asyncio.Event()
+    
+    # Add a handler to monitor when the exam is completed
+    async def monitor_exam_completion():
+        while not exam_state.exam_completed:
+            await asyncio.sleep(1)
+        # When exam is completed, set the event
+        exam_completed_event.set()
+    
+    # Start the monitoring task
+    monitor_task = asyncio.create_task(monitor_exam_completion())
+    
+    # Wait for the exam to complete
+    await exam_completed_event.wait()
+    
+    # Add a small delay to ensure the final message is delivered
+    await asyncio.sleep(2)
+    
+    # Save the conversation transcript when the exam is completed or when we exit
+    await save_transcript(db_driver, exam_state.exam.exam_id, agent)
+    
+    # Disconnect from the room
+    logger.info("Exam completed, disconnecting from the room")
+    ctx.shutdown(reason="Session ended")
 
 if __name__ == "__main__":
     cli.run_app(
